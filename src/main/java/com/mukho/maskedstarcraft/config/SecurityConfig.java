@@ -1,7 +1,7 @@
 package com.mukho.maskedstarcraft.config;
 
-import com.mukho.maskedstarcraft.security.JwtAuthenticationFilter;
-import lombok.RequiredArgsConstructor;
+import java.util.Arrays;
+
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpMethod;
@@ -15,7 +15,9 @@ import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.CorsConfigurationSource;
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 
-import java.util.Arrays;
+import com.mukho.maskedstarcraft.security.JwtAuthenticationFilter;
+
+import lombok.RequiredArgsConstructor;
 
 @Configuration
 @EnableWebSecurity
@@ -46,19 +48,25 @@ public class SecurityConfig {
             .csrf(csrf -> csrf.disable())
             .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
             .authorizeHttpRequests(auth -> auth
-                // Public endpoints
+                // Public endpoints - 인증 불필요
                 .requestMatchers("/api/v1/auth/**").permitAll()
-                .requestMatchers(HttpMethod.GET, "/api/v1/players").permitAll()
-                .requestMatchers(HttpMethod.GET, "/api/v1/tournaments/current").permitAll()
+                .requestMatchers(HttpMethod.POST, "/api/v1/players").permitAll()        // 참가 신청
+                .requestMatchers(HttpMethod.GET, "/api/v1/players").permitAll()         // 참가자 목록 조회
+                .requestMatchers(HttpMethod.GET, "/api/v1/tournaments/current").permitAll() // 현재 대회 정보 조회
                 .requestMatchers("/ws/**").permitAll()
                 .requestMatchers("/h2-console/**").permitAll()
+                .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()                 // CORS OPTIONS 요청 허용
+                
+                // Player can cancel their own participation (구체적인 패턴을 먼저)
+                .requestMatchers(HttpMethod.DELETE, "/api/v1/players/me").hasAnyRole("PLAYER", "ADMIN")  // 자신의 참가 취소
                 
                 // Admin only endpoints
-                .requestMatchers(HttpMethod.DELETE, "/api/v1/players/**").hasRole("ADMIN")
+                .requestMatchers(HttpMethod.POST, "/api/v1/tournaments/start").hasRole("ADMIN")
+                .requestMatchers(HttpMethod.POST, "/api/v1/games/result").hasRole("ADMIN")
+                .requestMatchers(HttpMethod.DELETE, "/api/v1/players/{playerId}").hasRole("ADMIN")  // 특정 플레이어 삭제 (관리자만)
+                .requestMatchers(HttpMethod.DELETE, "/api/v1/players").hasRole("ADMIN")            // 모든 플레이어 삭제 (관리자만)
                 .requestMatchers("/api/v1/maps/**").hasRole("ADMIN")
-                .requestMatchers(HttpMethod.POST, "/api/v1/tournaments/**").hasRole("ADMIN")
-                .requestMatchers(HttpMethod.POST, "/api/v1/games/**").hasRole("ADMIN")
-                .requestMatchers("/api/v1/tournaments/logs").hasRole("ADMIN")
+                .requestMatchers("/api/v1/logs/**").hasRole("ADMIN")
                 
                 .anyRequest().authenticated()
             )

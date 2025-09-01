@@ -21,7 +21,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
-import java.util.List;
+import java.util.*;
 import java.util.stream.Collectors;
 
 @Service
@@ -114,16 +114,80 @@ public class LogService {
                 .duration(duration)
                 .build();
         
+        // 최다연승자들 계산
+        List<PlayerResponse> maxStreakPlayers = calculateMaxStreakPlayersFromGames(gameLogs);
+        
+        // 우승자 연승 계산
+        Integer winnerStreak = null;
+        if (tournament.getWinnerUser() != null) {
+            winnerStreak = calculateWinStreak(tournament.getWinnerUser(), gameLogs);
+        }
+        
         return TournamentLogResponse.builder()
                 .tournamentId(tournament.getId())
                 .startTime(tournament.getCreatedAt())
                 .endTime(gameLogs.isEmpty() ? null : gameLogs.get(gameLogs.size() - 1).getCreatedAt())
                 .status(tournament.getStatus().name())
                 .winner(tournament.getWinnerUser() != null ? createPlayerResponse(tournament.getWinnerUser()) : null)
+                .winnerStreak(winnerStreak)
                 .maxStreakPlayer(tournament.getMaxStreakUser() != null ? createPlayerResponse(tournament.getMaxStreakUser()) : null)
+                .maxStreakPlayers(maxStreakPlayers)
+                .maxStreak(maxStreak)
                 .games(gameDetails)
                 .stats(stats)
                 .build();
+    }
+    
+    private List<PlayerResponse> calculateMaxStreakPlayersFromGames(List<GameLog> gameLogs) {
+        java.util.Map<Long, Integer> maxStreaks = new HashMap<>();
+        java.util.Map<Long, Integer> currentStreaks = new HashMap<>();
+        
+        for (GameLog game : gameLogs) {
+            if (game.getWinner() != null) {
+                Long winnerId = game.getWinner().getId();
+                currentStreaks.put(winnerId, currentStreaks.getOrDefault(winnerId, 0) + 1);
+                maxStreaks.put(winnerId, Math.max(maxStreaks.getOrDefault(winnerId, 0), 
+                                                 currentStreaks.get(winnerId)));
+                
+                // 패배자의 연승 초기화
+                Long loserId = game.getPlayer1().getId().equals(winnerId) ? 
+                              game.getPlayer2().getId() : game.getPlayer1().getId();
+                currentStreaks.put(loserId, 0);
+            }
+        }
+        
+        if (maxStreaks.isEmpty()) {
+            return new ArrayList<>();
+        }
+        
+        int maxStreak = maxStreaks.values().stream()
+                .mapToInt(Integer::intValue)
+                .max()
+                .orElse(0);
+        
+        return maxStreaks.entrySet().stream()
+                .filter(entry -> entry.getValue() == maxStreak)
+                .map(entry -> gameLogs.stream()
+                        .flatMap(game -> java.util.stream.Stream.of(game.getPlayer1(), game.getPlayer2()))
+                        .filter(user -> user.getId().equals(entry.getKey()))
+                        .findFirst()
+                        .map(this::createPlayerResponse)
+                        .orElse(null))
+                .filter(Objects::nonNull)
+                .collect(Collectors.toList());
+    }
+    
+    private int calculateWinStreak(User player, List<GameLog> gameLogs) {
+        int streak = 0;
+        for (int i = gameLogs.size() - 1; i >= 0; i--) {
+            GameLog game = gameLogs.get(i);
+            if (game.getWinner() != null && game.getWinner().getId().equals(player.getId())) {
+                streak++;
+            } else {
+                break;
+            }
+        }
+        return streak;
     }
     
     private int calculateWinStreakAtGame(GameLog targetGame, List<GameLog> allGames) {
@@ -178,14 +242,22 @@ public class LogService {
         sb.append("🏆 대회 결과\n");
         sb.append("-".repeat(40)).append("\n");
         if (logData.getWinner() != null) {
-            sb.append(String.format("최종 우승자: %s (%s)\n", 
-                    logData.getWinner().getNickname(), 
-                    logData.getWinner().getRace()));
+            String winnerText = logData.getWinner().getName() != null ? 
+                    String.format("%s(%s)", logData.getWinner().getNickname(), logData.getWinner().getName()) :
+                    logData.getWinner().getNickname();
+            int winnerStreak = logData.getWinnerStreak() != null ? logData.getWinnerStreak().intValue() : 0;
+            sb.append(String.format("최종 우승자: %s (%d연승)\n", winnerText, winnerStreak));
         }
-        if (logData.getMaxStreakPlayer() != null) {
-            sb.append(String.format("최다 연승자: %s (최대 %d연승)\n", 
-                    logData.getMaxStreakPlayer().getNickname(),
-                    logData.getStats().getMaxStreak()));
+        
+        if (logData.getMaxStreakPlayers() != null && !logData.getMaxStreakPlayers().isEmpty()) {
+            int maxStreak = logData.getMaxStreak() != null ? logData.getMaxStreak().intValue() : 0;
+            sb.append(String.format("최다 연승자(%d연승):\n", maxStreak));
+            for (PlayerResponse player : logData.getMaxStreakPlayers()) {
+                String playerText = player.getName() != null ? 
+                        String.format("%s(%s)", player.getNickname(), player.getName()) :
+                        player.getNickname();
+                sb.append(String.format("  - %s\n", playerText));
+            }
         }
         sb.append("\n");
         
@@ -229,17 +301,15 @@ public class LogService {
     
     private String formatPlayer(PlayerResponse player) {
         if (player == null) return "N/A";
-        return String.format("%s(%s)", player.getNickname(), player.getRace());
+        if (player.getName() != null && !player.getName().isEmpty()) {
+            return String.format("%s(%s)", player.getNickname(), player.getName());
+        }
+        return player.getNickname();
     }
     
     private PlayerResponse createPlayerResponse(User user) {
-        String currentUserRole = getCurrentUserRole();
-        
-        if ("ADMIN".equals(currentUserRole)) {
-            return PlayerResponse.from(user);
-        } else {
-            return PlayerResponse.fromPublic(user);
-        }
+        // 임시로 항상 이름을 포함하도록 수정 (디버깅용)
+        return PlayerResponse.from(user);
     }
     
     private String getCurrentUserRole() {

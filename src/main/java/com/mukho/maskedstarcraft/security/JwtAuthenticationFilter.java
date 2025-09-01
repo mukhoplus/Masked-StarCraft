@@ -1,11 +1,8 @@
 package com.mukho.maskedstarcraft.security;
 
-import jakarta.servlet.FilterChain;
-import jakarta.servlet.ServletException;
-import jakarta.servlet.http.HttpServletRequest;
-import jakarta.servlet.http.HttpServletResponse;
-import lombok.RequiredArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
+import java.io.IOException;
+import java.util.Collections;
+
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -14,8 +11,12 @@ import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 import org.springframework.web.filter.OncePerRequestFilter;
 
-import java.io.IOException;
-import java.util.Collections;
+import jakarta.servlet.FilterChain;
+import jakarta.servlet.ServletException;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 
 @Component
 @RequiredArgsConstructor
@@ -29,10 +30,14 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                                     FilterChain filterChain) throws ServletException, IOException {
         
         String jwt = getJwtFromRequest(request);
+        log.debug("JWT token from request: {}", jwt != null ? "present" : "absent");
+        log.debug("Request URI: {} {}", request.getMethod(), request.getRequestURI());
         
         if (StringUtils.hasText(jwt) && jwtUtil.validateToken(jwt)) {
             String nickname = jwtUtil.getNicknameFromToken(jwt);
             String role = jwtUtil.getRoleFromToken(jwt);
+            
+            log.debug("Authenticated user: {} with role: {}", nickname, role);
             
             UsernamePasswordAuthenticationToken authentication = 
                 new UsernamePasswordAuthenticationToken(
@@ -43,6 +48,8 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             authentication.setDetails(new WebAuthenticationDetailsSource().buildDetails(request));
             
             SecurityContextHolder.getContext().setAuthentication(authentication);
+        } else {
+            log.debug("JWT validation failed or token absent");
         }
         
         filterChain.doFilter(request, response);

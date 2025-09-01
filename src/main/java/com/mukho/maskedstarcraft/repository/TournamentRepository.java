@@ -1,7 +1,9 @@
 package com.mukho.maskedstarcraft.repository;
 
+import java.util.List;
 import java.util.Optional;
 
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.stereotype.Repository;
@@ -15,5 +17,12 @@ public interface TournamentRepository extends JpaRepository<Tournament, Long> {
     Optional<Tournament> findCurrentTournament();
     
     @Query("SELECT t FROM Tournament t WHERE t.status = 'FINISHED' ORDER BY t.createdAt DESC")
-    Optional<Tournament> findLatestFinishedTournament();
+    List<Tournament> findFinishedTournaments(Pageable pageable);
+    
+    boolean existsByStatus(Tournament.Status status);
+    
+    default Optional<Tournament> findLatestFinishedTournament() {
+        List<Tournament> tournaments = findFinishedTournaments(Pageable.ofSize(1));
+        return tournaments.isEmpty() ? Optional.empty() : Optional.of(tournaments.get(0));
+    }
 }

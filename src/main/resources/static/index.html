@@ -1,0 +1,389 @@
+<!DOCTYPE html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Masked StarCraft Tournament</title>
+    <script src="https://cdn.jsdelivr.net/npm/sockjs-client@1/dist/sockjs.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/stompjs@2.3.3/lib/stomp.min.js"></script>
+    <style>
+      body {
+        font-family: Arial, sans-serif;
+        max-width: 1200px;
+        margin: 0 auto;
+        padding: 20px;
+        background-color: #f5f5f5;
+      }
+      .container {
+        background-color: white;
+        padding: 20px;
+        border-radius: 10px;
+        box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
+        margin-bottom: 20px;
+      }
+      .refresh-notice {
+        background-color: #ffeb3b;
+        padding: 15px;
+        border-radius: 5px;
+        margin-bottom: 20px;
+        display: none;
+        align-items: center;
+        justify-content: space-between;
+      }
+      .refresh-notice.show {
+        display: flex;
+      }
+      .refresh-btn {
+        background-color: #4caf50;
+        color: white;
+        border: none;
+        padding: 10px 20px;
+        border-radius: 5px;
+        cursor: pointer;
+        font-size: 16px;
+      }
+      .refresh-btn:hover {
+        background-color: #45a049;
+      }
+      .tournament-info {
+        margin-bottom: 20px;
+      }
+      .current-game {
+        border-left: 5px solid #2196f3;
+        padding-left: 15px;
+        margin: 20px 0;
+      }
+      .game-history {
+        margin-top: 30px;
+      }
+      .game-item {
+        background-color: #f9f9f9;
+        padding: 10px;
+        margin: 5px 0;
+        border-radius: 5px;
+        border-left: 3px solid #4caf50;
+      }
+      .websocket-status {
+        position: fixed;
+        top: 10px;
+        right: 10px;
+        padding: 5px 10px;
+        border-radius: 5px;
+        font-size: 12px;
+      }
+      .connected {
+        background-color: #4caf50;
+        color: white;
+      }
+      .disconnected {
+        background-color: #f44336;
+        color: white;
+      }
+      .notification {
+        background-color: #2196f3;
+        color: white;
+        padding: 10px;
+        margin: 5px 0;
+        border-radius: 5px;
+        opacity: 0.9;
+      }
+      .error {
+        background-color: #f44336;
+        color: white;
+        padding: 10px;
+        margin: 5px 0;
+        border-radius: 5px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="websocket-status" id="wsStatus">연결 중...</div>
+
+    <h1>🎮 Masked StarCraft Tournament</h1>
+
+    <div class="refresh-notice" id="refreshNotice">
+      <span>🔄 대회 진행 상황에 변화가 있습니다!</span>
+      <button class="refresh-btn" onclick="refreshTournament()">
+        새로고침
+      </button>
+    </div>
+
+    <div class="container">
+      <div id="notifications"></div>
+
+      <div class="tournament-info">
+        <h2>현재 대회 상황</h2>
+        <div id="tournamentStatus">로딩 중...</div>
+      </div>
+
+      <div id="currentGame" class="current-game" style="display: none">
+        <h3>🔥 현재 경기</h3>
+        <div id="currentGameInfo"></div>
+      </div>
+
+      <div class="game-history" id="gameHistory" style="display: none">
+        <h3>📜 경기 기록</h3>
+        <div id="gameHistoryList"></div>
+      </div>
+
+      <div id="tournamentResult" style="display: none">
+        <h3>🏆 대회 결과</h3>
+        <div id="resultInfo"></div>
+      </div>
+    </div>
+
+    <script>
+      let stompClient = null;
+      let isConnected = false;
+
+      function updateConnectionStatus(connected) {
+        isConnected = connected;
+        const statusEl = document.getElementById("wsStatus");
+        if (connected) {
+          statusEl.textContent = "🟢 연결됨";
+          statusEl.className = "websocket-status connected";
+        } else {
+          statusEl.textContent = "🔴 연결 끊김";
+          statusEl.className = "websocket-status disconnected";
+        }
+      }
+
+      function connect() {
+        const socket = new SockJS("/ws");
+        stompClient = Stomp.over(socket);
+
+        stompClient.connect(
+          {},
+          function (frame) {
+            console.log("Connected: " + frame);
+            updateConnectionStatus(true);
+
+            // 토너먼트 업데이트 구독
+            stompClient.subscribe("/topic/tournament", function (message) {
+              console.log("Tournament update received:", message.body);
+              handleTournamentUpdate(message.body);
+            });
+
+            // 새로고침 알림 구독
+            stompClient.subscribe("/topic/refresh", function (message) {
+              console.log("Refresh notification received:", message.body);
+              showRefreshNotice();
+            });
+
+            // 게임 결과 구독
+            stompClient.subscribe("/topic/game-result", function (message) {
+              console.log("Game result received:", message.body);
+              showNotification("게임 결과: " + message.body, "notification");
+            });
+
+            // 초기 데이터 로드
+            loadTournamentData();
+          },
+          function (error) {
+            console.error("WebSocket connection error:", error);
+            updateConnectionStatus(false);
+            // 재연결 시도
+            setTimeout(connect, 5000);
+          }
+        );
+      }
+
+      function handleTournamentUpdate(message) {
+        if (message === "tournament_started") {
+          showNotification("🎉 새로운 대회가 시작되었습니다!", "notification");
+          showRefreshNotice();
+        } else if (message.startsWith("tournament_finished:")) {
+          const winner = message.split(":")[1];
+          showNotification(
+            "🏆 대회가 종료되었습니다! 우승자: " + winner,
+            "notification"
+          );
+          showRefreshNotice();
+        } else {
+          showRefreshNotice();
+        }
+      }
+
+      function showRefreshNotice() {
+        document.getElementById("refreshNotice").classList.add("show");
+      }
+
+      function hideRefreshNotice() {
+        document.getElementById("refreshNotice").classList.remove("show");
+      }
+
+      function showNotification(message, type = "notification") {
+        const notificationsEl = document.getElementById("notifications");
+        const notificationEl = document.createElement("div");
+        notificationEl.className = type;
+        notificationEl.textContent = message;
+        notificationsEl.appendChild(notificationEl);
+
+        // 5초 후 알림 제거
+        setTimeout(() => {
+          notificationEl.remove();
+        }, 5000);
+      }
+
+      function refreshTournament() {
+        fetch("/api/v1/tournaments/refresh", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+        })
+          .then((response) => response.json())
+          .then((data) => {
+            if (data.success) {
+              displayTournamentData(data.data);
+              hideRefreshNotice();
+              showNotification(
+                "✅ 대회 정보가 새로고침되었습니다!",
+                "notification"
+              );
+            } else {
+              showNotification(
+                "❌ 새로고침 중 오류가 발생했습니다: " + data.message,
+                "error"
+              );
+            }
+          })
+          .catch((error) => {
+            console.error("Refresh error:", error);
+            showNotification("❌ 새로고침 중 오류가 발생했습니다.", "error");
+          });
+      }
+
+      function loadTournamentData() {
+        fetch("/api/v1/tournaments/current")
+          .then((response) => response.json())
+          .then((data) => {
+            if (data.success) {
+              displayTournamentData(data.data);
+            } else {
+              document.getElementById("tournamentStatus").textContent =
+                data.message || "진행 중인 대회가 없습니다.";
+            }
+          })
+          .catch((error) => {
+            console.error("Error loading tournament data:", error);
+            showNotification(
+              "❌ 대회 정보를 불러오는 중 오류가 발생했습니다.",
+              "error"
+            );
+          });
+      }
+
+      function displayTournamentData(tournament) {
+        const statusEl = document.getElementById("tournamentStatus");
+        const currentGameEl = document.getElementById("currentGame");
+        const historyEl = document.getElementById("gameHistory");
+        const resultEl = document.getElementById("tournamentResult");
+
+        if (!tournament) {
+          statusEl.textContent = "진행 중인 대회가 없습니다.";
+          currentGameEl.style.display = "none";
+          historyEl.style.display = "none";
+          resultEl.style.display = "none";
+          return;
+        }
+
+        // 대회 상태 표시
+        const statusMap = {
+          PREPARING: "준비 중",
+          IN_PROGRESS: "진행 중",
+          FINISHED: "완료됨",
+        };
+        statusEl.innerHTML = `<strong>상태:</strong> ${
+          statusMap[tournament.status] || tournament.status
+        }`;
+
+        // 현재 경기 표시
+        if (tournament.currentGame) {
+          currentGameEl.style.display = "block";
+          document.getElementById("currentGameInfo").innerHTML = `
+                    <div style="font-size: 18px; margin: 10px 0;">
+                        <strong>${tournament.currentGame.player1.displayName}</strong> 
+                        VS 
+                        <strong>${tournament.currentGame.player2.displayName}</strong>
+                    </div>
+                    <div>맵: <strong>${tournament.currentGame.map.name}</strong></div>
+                    <div>라운드: <strong>${tournament.currentGame.round}</strong></div>
+                `;
+        } else {
+          currentGameEl.style.display = "none";
+        }
+
+        // 경기 기록 표시
+        if (tournament.previousGames && tournament.previousGames.length > 0) {
+          historyEl.style.display = "block";
+          const historyHtml = tournament.previousGames
+            .map(
+              (game) => `
+                    <div class="game-item">
+                        <strong>라운드 ${game.round}:</strong> 
+                        ${game.winner.displayName} 승 (vs ${
+                game.loser.displayName
+              }) 
+                        - ${game.map.name} 
+                        ${game.streak ? `[${game.streak}연승]` : ""}
+                    </div>
+                `
+            )
+            .join("");
+          document.getElementById("gameHistoryList").innerHTML = historyHtml;
+        } else {
+          historyEl.style.display = "none";
+        }
+
+        // 대회 결과 표시
+        if (tournament.result) {
+          resultEl.style.display = "block";
+          let resultHtml = `
+                    <div style="font-size: 20px; margin: 15px 0;">
+                        🏆 <strong>우승자: ${
+                          tournament.result.winner.displayName
+                        }</strong>
+                        ${
+                          tournament.result.winnerStreak
+                            ? ` (최종 ${tournament.result.winnerStreak}연승)`
+                            : ""
+                        }
+                    </div>
+                `;
+
+          if (
+            tournament.result.maxStreakPlayers &&
+            tournament.result.maxStreakPlayers.length > 0
+          ) {
+            const maxStreakNames = tournament.result.maxStreakPlayers
+              .map((p) => p.displayName)
+              .join(", ");
+            resultHtml += `
+                        <div style="margin: 10px 0;">
+                            🔥 <strong>최다연승:</strong> ${maxStreakNames} 
+                            (${tournament.result.maxStreak}연승)
+                        </div>
+                    `;
+          }
+
+          document.getElementById("resultInfo").innerHTML = resultHtml;
+        } else {
+          resultEl.style.display = "none";
+        }
+      }
+
+      // 페이지 로드 시 WebSocket 연결
+      window.addEventListener("load", function () {
+        connect();
+      });
+
+      // 페이지 언로드 시 연결 해제
+      window.addEventListener("beforeunload", function () {
+        if (stompClient !== null) {
+          stompClient.disconnect();
+        }
+      });
+    </script>
+  </body>
+</html>

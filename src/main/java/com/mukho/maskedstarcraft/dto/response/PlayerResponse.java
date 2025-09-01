@@ -1,6 +1,7 @@
 package com.mukho.maskedstarcraft.dto.response;
 
 import com.mukho.maskedstarcraft.entity.User;
+
 import lombok.Builder;
 import lombok.Data;
 
@@ -27,5 +28,12 @@ public class PlayerResponse {
                 .nickname(user.getNickname())
                 .race(user.getRace())
                 .build();
+    }
+    
+    public String getDisplayName() {
+        if (name != null && !name.trim().isEmpty()) {
+            return nickname + "(" + name + ")";
+        }
+        return nickname;
     }
 }

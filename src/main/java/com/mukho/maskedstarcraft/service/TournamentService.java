@@ -1,20 +1,34 @@
 package com.mukho.maskedstarcraft.service;
 
-import com.mukho.maskedstarcraft.dto.request.GameResultRequest;
-import com.mukho.maskedstarcraft.dto.response.PlayerResponse;
-import com.mukho.maskedstarcraft.dto.response.TournamentResponse;
-import com.mukho.maskedstarcraft.dto.response.MapResponse;
-import com.mukho.maskedstarcraft.entity.*;
-import com.mukho.maskedstarcraft.exception.BusinessException;
-import com.mukho.maskedstarcraft.repository.*;
-import lombok.RequiredArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
-import org.springframework.security.core.context.SecurityContextHolder;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Objects;
+import java.util.Optional;
+import java.util.Random;
+import java.util.Set;
+import java.util.stream.Collectors;
+
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.util.*;
-import java.util.stream.Collectors;
+import com.mukho.maskedstarcraft.dto.request.GameResultRequest;
+import com.mukho.maskedstarcraft.dto.response.MapResponse;
+import com.mukho.maskedstarcraft.dto.response.PlayerResponse;
+import com.mukho.maskedstarcraft.dto.response.TournamentResponse;
+import com.mukho.maskedstarcraft.entity.GameLog;
+import com.mukho.maskedstarcraft.entity.Tournament;
+import com.mukho.maskedstarcraft.entity.User;
+import com.mukho.maskedstarcraft.exception.BusinessException;
+import com.mukho.maskedstarcraft.repository.GameLogRepository;
+import com.mukho.maskedstarcraft.repository.MapRepository;
+import com.mukho.maskedstarcraft.repository.TournamentRepository;
+import com.mukho.maskedstarcraft.repository.UserRepository;
+
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 
 @Service
 @RequiredArgsConstructor
@@ -61,7 +75,8 @@ public class TournamentService {
         log.info("Tournament started with {} players", players.size());
         
         // WebSocket으로 알림
-        webSocketService.broadcastTournamentUpdate();
+        webSocketService.broadcastTournamentStart();
+        webSocketService.broadcastRefreshRequired();
         
         return getCurrentTournament();
     }
@@ -124,14 +139,26 @@ public class TournamentService {
         
         // WebSocket으로 알림
         webSocketService.broadcastTournamentUpdate();
+        webSocketService.broadcastRefreshRequired();
         
         return getCurrentTournament();
     }
     
     private void createFirstGame(Tournament tournament, List<User> players, List<com.mukho.maskedstarcraft.entity.Map> maps) {
-        // 첫 두 명의 플레이어 선택
-        User player1 = players.get(0);
-        User player2 = players.get(1);
+        // 플레이어 리스트를 셔플하여 무작위 순서로 만듦
+        List<User> shuffledPlayers = new ArrayList<>(players);
+        Collections.shuffle(shuffledPlayers);
+        
+        // 첫 두 명의 플레이어 선택 (무작위)
+        User player1 = shuffledPlayers.get(0);
+        User player2 = shuffledPlayers.get(1);
+        
+        // 플레이어 순서도 무작위로 결정
+        if (new Random().nextBoolean()) {
+            User temp = player1;
+            player1 = player2;
+            player2 = temp;
+        }
         
         // 랜덤 맵 선택
         com.mukho.maskedstarcraft.entity.Map selectedMap = maps.get(new Random().nextInt(maps.size()));
@@ -145,6 +172,7 @@ public class TournamentService {
                 .build();
         
         gameLogRepository.save(gameLog);
+        log.info("First game created: {} vs {} on {}", player1.getNickname(), player2.getNickname(), selectedMap.getName());
     }
     
     private void processNextGame(Tournament tournament, User winner) {
@@ -152,10 +180,7 @@ public class TournamentService {
         List<com.mukho.maskedstarcraft.entity.Map> maps = mapRepository.findAllActiveMaps();
         List<GameLog> gameLogs = gameLogRepository.findByTournamentOrderByRoundAsc(tournament);
         
-        // 연승 계산
-        int winStreak = calculateWinStreak(winner, gameLogs);
-        
-        // 다음 도전자 찾기
+        // 다음 도전자 찾기 (무작위 선택)
         Optional<User> nextChallenger = findNextChallenger(winner, players, gameLogs);
         
         if (nextChallenger.isPresent()) {
@@ -163,15 +188,26 @@ public class TournamentService {
             int nextRound = gameLogs.size() + 1;
             com.mukho.maskedstarcraft.entity.Map selectedMap = maps.get(new Random().nextInt(maps.size()));
             
+            // 승자와 도전자의 순서도 무작위로 결정
+            User player1 = winner;
+            User player2 = nextChallenger.get();
+            
+            if (new Random().nextBoolean()) {
+                player1 = nextChallenger.get();
+                player2 = winner;
+            }
+            
             GameLog nextGame = GameLog.builder()
                     .tournament(tournament)
                     .map(selectedMap)
-                    .player1(winner) // 승자가 연승자
-                    .player2(nextChallenger.get())
+                    .player1(player1)
+                    .player2(player2)
                     .round(nextRound)
                     .build();
             
             gameLogRepository.save(nextGame);
+            log.info("Next game created: {} vs {} on {} (Round {})", 
+                    player1.getNickname(), player2.getNickname(), selectedMap.getName(), nextRound);
         } else {
             // 대회 종료
             finishTournament(tournament, winner, gameLogs);
@@ -180,17 +216,24 @@ public class TournamentService {
     
     private void finishTournament(Tournament tournament, User finalWinner, List<GameLog> gameLogs) {
         // 최다 연승자 계산
-        User maxStreakPlayer = calculateMaxStreakPlayer(gameLogs);
+        MaxStreakResult maxStreakResult = calculateMaxStreakPlayers(gameLogs);
         
         tournament.setStatus(Tournament.Status.FINISHED);
         tournament.setWinnerUser(finalWinner);
-        tournament.setMaxStreakUser(maxStreakPlayer);
+        // 첫 번째 최다연승자만 저장 (기존 DB 구조 유지)
+        tournament.setMaxStreakUser(maxStreakResult.getPlayers().isEmpty() ? null : maxStreakResult.getPlayers().get(0));
         
         tournamentRepository.save(tournament);
         
-        log.info("Tournament finished. Winner: {}, Max streak: {}", 
+        log.info("Tournament finished. Winner: {}, Max streak players: {}", 
                 finalWinner.getNickname(), 
-                maxStreakPlayer.getNickname());
+                maxStreakResult.getPlayers().stream()
+                        .map(User::getNickname)
+                        .collect(Collectors.joining(", ")));
+                        
+        // WebSocket으로 대회 종료 알림
+        webSocketService.broadcastTournamentFinish(finalWinner.getNickname());
+        webSocketService.broadcastRefreshRequired();
     }
     
     private int calculateWinStreak(User player, List<GameLog> gameLogs) {
@@ -211,13 +254,22 @@ public class TournamentService {
                 .flatMap(game -> Arrays.stream(new Long[]{game.getPlayer1().getId(), game.getPlayer2().getId()}))
                 .collect(Collectors.toSet());
         
-        return players.stream()
+        // 아직 경기하지 않은 플레이어들을 모두 찾기
+        List<User> availablePlayers = players.stream()
                 .filter(player -> !player.getId().equals(currentWinner.getId()))
                 .filter(player -> !playedPlayerIds.contains(player.getId()))
-                .findFirst();
+                .collect(Collectors.toList());
+        
+        if (availablePlayers.isEmpty()) {
+            return Optional.empty();
+        }
+        
+        // 무작위로 한 명 선택
+        Collections.shuffle(availablePlayers);
+        return Optional.of(availablePlayers.get(0));
     }
     
-    private User calculateMaxStreakPlayer(List<GameLog> gameLogs) {
+    private MaxStreakResult calculateMaxStreakPlayers(List<GameLog> gameLogs) {
         java.util.Map<Long, Integer> maxStreaks = new HashMap<>();
         java.util.Map<Long, Integer> currentStreaks = new HashMap<>();
         
@@ -235,13 +287,35 @@ public class TournamentService {
             }
         }
         
-        Long maxStreakPlayerId = maxStreaks.entrySet().stream()
-                .max(java.util.Map.Entry.comparingByValue())
-                .map(java.util.Map.Entry::getKey)
-                .orElse(null);
+        if (maxStreaks.isEmpty()) {
+            return new MaxStreakResult(new ArrayList<>(), 0);
+        }
         
-        return maxStreakPlayerId != null ? 
-               userRepository.findById(maxStreakPlayerId).orElse(null) : null;
+        int maxStreak = maxStreaks.values().stream()
+                .mapToInt(Integer::intValue)
+                .max()
+                .orElse(0);
+        
+        List<User> maxStreakPlayers = maxStreaks.entrySet().stream()
+                .filter(entry -> entry.getValue() == maxStreak)
+                .map(entry -> userRepository.findById(entry.getKey()).orElse(null))
+                .filter(Objects::nonNull)
+                .collect(Collectors.toList());
+        
+        return new MaxStreakResult(maxStreakPlayers, maxStreak);
+    }
+    
+    private static class MaxStreakResult {
+        private final List<User> players;
+        private final int maxStreak;
+        
+        public MaxStreakResult(List<User> players, int maxStreak) {
+            this.players = players;
+            this.maxStreak = maxStreak;
+        }
+        
+        public List<User> getPlayers() { return players; }
+        public int getMaxStreak() { return maxStreak; }
     }
     
     private TournamentResponse buildInProgressTournamentResponse(Tournament tournament) {
@@ -284,6 +358,7 @@ public class TournamentService {
                 .status(tournament.getStatus().name())
                 .currentGame(currentGameResponse)
                 .previousGames(gameLogResponses)
+                .showPreviousGames(false) // 진행 중인 대회는 기본적으로 이전 게임 목록을 숨김
                 .build();
     }
     
@@ -297,10 +372,20 @@ public class TournamentService {
         
         TournamentResponse.TournamentResultResponse result = null;
         if (tournament.getWinnerUser() != null) {
+            // 최다연승자들과 연승수 계산
+            List<GameLog> gameLogsAsc = gameLogRepository.findByTournamentOrderByRoundAsc(tournament);
+            MaxStreakResult maxStreakResult = calculateMaxStreakPlayers(gameLogsAsc);
+            
+            // 우승자의 연승수 계산
+            int winnerStreak = calculateWinStreak(tournament.getWinnerUser(), gameLogsAsc);
+            
             result = TournamentResponse.TournamentResultResponse.builder()
                     .winner(createPlayerResponse(tournament.getWinnerUser()))
-                    .maxStreakPlayer(tournament.getMaxStreakUser() != null ? 
-                                   createPlayerResponse(tournament.getMaxStreakUser()) : null)
+                    .winnerStreak(winnerStreak)
+                    .maxStreakPlayers(maxStreakResult.getPlayers().stream()
+                            .map(this::createPlayerResponse)
+                            .collect(Collectors.toList()))
+                    .maxStreak(maxStreakResult.getMaxStreak())
                     .build();
         }
         
@@ -309,6 +394,7 @@ public class TournamentService {
                 .status(tournament.getStatus().name())
                 .previousGames(gameLogResponses)
                 .result(result)
+                .showPreviousGames(true) // 종료된 대회는 이전 게임 목록을 표시
                 .build();
     }
     
@@ -337,18 +423,8 @@ public class TournamentService {
     }
     
     private PlayerResponse createPlayerResponse(User user) {
-        String currentUserRole = getCurrentUserRole();
-        
-        if ("ADMIN".equals(currentUserRole)) {
-            return PlayerResponse.from(user);
-        } else {
-            return PlayerResponse.fromPublic(user);
-        }
-    }
-    
-    private String getCurrentUserRole() {
-        return SecurityContextHolder.getContext().getAuthentication()
-                .getAuthorities().iterator().next().getAuthority().replace("ROLE_", "");
+        // 임시로 항상 이름을 포함하도록 수정 (디버깅용)
+        return PlayerResponse.from(user);
     }
     
     // Exception classes

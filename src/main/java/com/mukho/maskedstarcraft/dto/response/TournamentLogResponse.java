@@ -14,7 +14,10 @@ public class TournamentLogResponse {
     private LocalDateTime endTime;
     private String status;
     private PlayerResponse winner;
-    private PlayerResponse maxStreakPlayer;
+    private Integer winnerStreak;
+    private PlayerResponse maxStreakPlayer; // 호환성을 위해 유지
+    private List<PlayerResponse> maxStreakPlayers;
+    private Integer maxStreak;
     private List<GameLogDetail> games;
     private TournamentStats stats;
     
